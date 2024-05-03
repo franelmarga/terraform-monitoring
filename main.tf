@@ -46,41 +46,64 @@ resource "aws_instance" "prometheus" {
   key_name      = aws_key_pair.deployer_key.key_name
 
   user_data = <<-EOF
-              #!/bin/bash
-              sudo apt-get update
-              sudo apt-get install -y wget
-              wget https://github.com/prometheus/prometheus/releases/download/v2.37.0/prometheus-2.37.0.linux-amd64.tar.gz
-              tar xvfz prometheus-*.tar.gz
-              cd prometheus-2.37.0.linux-amd64
-              sudo cp prometheus /usr/local/bin/
-              sudo cp promtool /usr/local/bin/
-              sudo mkdir /etc/prometheus
-              sudo cp -r consoles/ console_libraries/ /etc/prometheus/
-              sudo cp prometheus.yml /etc/prometheus/prometheus.yml
-              sudo useradd --no-create-home --shell /bin/false prometheus
-              sudo chown -R prometheus:prometheus /etc/prometheus /usr/local/bin/prometheus /usr/local/bin/promtool
-              echo '[Unit]
-              Description=Prometheus
-              Wants=network-online.target
-              After=network-online.target
+  #!/bin/bash
 
-              [Service]
-              User=prometheus
-              Group=prometheus
-              Type=simple
-              ExecStart=/usr/local/bin/prometheus \
-                --config.file /etc/prometheus/prometheus.yml \
-                --storage.tsdb.path /var/lib/prometheus/ \
-                --web.console.templates=/etc/prometheus/consoles \
-                --web.console.libraries=/etc/prometheus/console_libraries
-              Restart=always
+  # Setup logging for the user data execution
+  exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
-              [Install]
-              WantedBy=multi-user.target' | sudo tee /etc/systemd/system/prometheus.service
-              sudo systemctl daemon-reload
-              sudo systemctl enable prometheus
-              sudo systemctl start prometheus
-              EOF
+  # Update system and install necessary packages
+  sudo apt-get update
+  sudo apt-get install -y wget
+
+  # Download and extract Prometheus
+  wget -qO- https://github.com/prometheus/prometheus/releases/download/v2.37.0/prometheus-2.37.0.linux-amd64.tar.gz | tar xvz -C /usr/local/bin --strip-components=1
+
+  # Create necessary directories
+  sudo mkdir -p /etc/prometheus
+  sudo mkdir -p /var/lib/prometheus
+  sudo mkdir -p /etc/prometheus/consoles
+  sudo mkdir -p /etc/prometheus/console_libraries
+
+  # Copy configuration and web assets
+  sudo cp /usr/local/bin/consoles/*.html /etc/prometheus/consoles/
+  sudo cp /usr/local/bin/console_libraries/*.js /etc/prometheus/console_libraries/
+  sudo cp /usr/local/bin/prometheus.yml /etc/prometheus/
+
+  # Create Prometheus user
+  sudo useradd --no-create-home --shell /bin/false prometheus
+
+  # Set permissions
+  sudo chown -R prometheus:prometheus /etc/prometheus /var/lib/prometheus /usr/local/bin/prometheus /usr/local/bin/promtool
+
+  # Create systemd service
+  echo '[Unit]
+  Description=Prometheus
+  Wants=network-online.target
+  After=network-online.target
+
+  [Service]
+  User=prometheus
+  Group=prometheus
+  Type=simple
+  ExecStart=/usr/local/bin/prometheus \
+    --config.file /etc/prometheus/prometheus.yml \
+    --storage.tsdb.path /var/lib/prometheus/ \
+    --web.console.templates=/etc/prometheus/consoles \
+    --web.console.libraries=/etc/prometheus/console_libraries
+  Restart=always
+
+  [Install]
+  WantedBy=multi-user.target' | sudo tee /etc/systemd/system/prometheus.service
+
+  # Reload systemd to recognize the new service, enable and start Prometheus
+  sudo systemctl daemon-reload
+  sudo systemctl enable prometheus
+  sudo systemctl start prometheus
+
+  # Clean up apt cache to free up space
+  sudo apt-get clean
+  EOF
+
 
   tags = {
     Name = "Prometheus"
@@ -135,6 +158,14 @@ resource "aws_security_group" "default" {
     description = "HTTP"
     from_port   = 80
     to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+    ingress {
+    description = "Prometheus"
+    from_port   = 9090
+    to_port     = 9090
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
